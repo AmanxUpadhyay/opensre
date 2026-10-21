@@ -355,6 +355,61 @@ def add_task(task: ScheduledTask, store_path: Path | None = None) -> ScheduledTa
     return stored_task
 
 
+def replace_work_item_reminder(
+    task: ScheduledTask, store_path: Path | None = None
+) -> ScheduledTask:
+    """Atomically replace a reminder, reusing only an enabled matching identity."""
+    if task.kind is not TaskKind.WORK_ITEM_REMINDER:
+        raise ValueError("replacement requires a work-item reminder")
+    path = store_path or default_task_store_path()
+    task = _owned_by_acting_scope(task)
+    definition = task.model_dump(mode="json")
+    wanted = _schedule_identity(definition)
+    owner = _owner_of(definition)
+    disabled_ids: list[str] = []
+    with FileLock(_lock_path(path)):
+        raw = _load_for_write(path)
+        existing = next(
+            (
+                entry
+                for entry in raw
+                if entry.get("enabled", True) and _schedule_identity(entry) == wanted
+            ),
+            None,
+        )
+        if existing is None:
+            definition["enabled"] = True
+            raw.append(definition)
+            stored_task = ScheduledTask.model_validate(definition)
+            changed = True
+        else:
+            stored_task = ScheduledTask.model_validate(existing)
+            changed = False
+
+        for entry in raw:
+            params = entry.get("params") or {}
+            if (
+                entry.get("id") != stored_task.id
+                and entry.get("kind") == TaskKind.WORK_ITEM_REMINDER.value
+                and entry.get("enabled", True)
+                and _owner_of(entry) == owner
+                and isinstance(params, dict)
+                and str(params.get("work_item_id", "")).strip() == task.params["work_item_id"]
+                and params.get("store_path", "") == task.params.get("store_path", "")
+            ):
+                entry["enabled"] = False
+                disabled_ids.append(str(entry["id"]))
+        changed = changed or bool(disabled_ids)
+        if changed:
+            _save_raw(path, raw)
+        # Retire queued ticks before another writer can re-enable the disabled row.
+        for task_id in disabled_ids:
+            skip_queued_runs(task_id, reason="disabled", db_path=_run_database_for_store(path))
+    if changed:
+        reload_signal.request_scheduler_reload()
+    return stored_task
+
+
 def remove_task(task_id: str, store_path: Path | None = None) -> bool:
     """Remove a schedule while retaining its execution history for diagnosis."""
     path = store_path or default_task_store_path()
@@ -609,6 +664,7 @@ __all__ = [
     "patch_scheduler_task",
     "patch_task_definitions",
     "record_task_success",
+    "replace_work_item_reminder",
     "remove_task",
     "update_task",
 ]
