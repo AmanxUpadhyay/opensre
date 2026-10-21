@@ -3,7 +3,10 @@
 from __future__ import annotations
 
 import threading
+from collections.abc import Callable, Mapping, Sequence
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -25,6 +28,7 @@ from gateway.core.prompt_intake import (
     CancelRefused,
     JsonlPromptJobStore,
     PromptJob,
+    PromptNotSaved,
     PromptQueue,
     PromptState,
 )
@@ -453,6 +457,148 @@ def test_a_resent_submission_or_answer_is_the_same_prompt_on_either_task(tmp_pat
     assert new.take(timeout_seconds=0.01) is None
     assert old.take(timeout_seconds=0.01) is answered
     assert old.take(timeout_seconds=0.01) is None
+
+
+def test_a_full_queue_recovers_a_persisted_request_without_admitting_new_work(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "prompt-jobs.jsonl"
+    clock = _Clock()
+    old = PromptQueue(clock=clock.read, store=JsonlPromptJobStore(path))
+    store = JsonlPromptJobStore(path)
+    new = PromptQueue(max_queued=1, clock=clock.read, store=store)
+    original = old.submit("fix ci", context={}, actor="a", request_id="original-request")
+    filler = new.submit("other work", context={}, actor="b", request_id="filler-request")
+    assert original is not None and filler is not None
+    before = store.load()
+
+    recovered = new.submit("fix ci", context={}, actor="a", request_id="original-request")
+    refused = new.submit("new work", context={}, actor="a", request_id="new-request")
+
+    assert recovered is not None and recovered.id == original.id
+    assert new.get(original.id) is recovered
+    assert refused is None and store.load() == before
+    assert new.take(timeout_seconds=0.01) is filler
+    assert new.take(timeout_seconds=0.01) is None
+    assert old.take(timeout_seconds=0.01) is original
+
+
+def test_persisted_request_recovery_does_not_consume_a_reserved_queue_slot(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = tmp_path / "prompt-jobs.jsonl"
+    clock = _Clock()
+    old = PromptQueue(clock=clock.read, store=JsonlPromptJobStore(path))
+    store = JsonlPromptJobStore(path)
+    new = PromptQueue(max_queued=1, clock=clock.read, store=store)
+    original = old.submit("fix ci", context={}, actor="a", request_id="original-request")
+    assert original is not None
+    saving = threading.Event()
+    release = threading.Event()
+    compare_and_append = store.compare_and_append
+
+    def block_first_save(
+        decide: Callable[[Mapping[str, dict[str, Any]]], Sequence[Mapping[str, Any]]],
+    ) -> bool:
+        if not saving.is_set():
+            saving.set()
+            assert release.wait(timeout=5.0)
+        return compare_and_append(decide)
+
+    monkeypatch.setattr(store, "compare_and_append", block_first_save)
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        pending = executor.submit(
+            new.submit, "other work", context={}, actor="b", request_id="filler-request"
+        )
+        try:
+            assert saving.wait(timeout=5.0)
+            recovery = executor.submit(
+                new.submit, "fix ci", context={}, actor="a", request_id="original-request"
+            )
+            recovered = recovery.result(timeout=5.0)
+            assert recovered is not None and recovered.id == original.id
+            refused = executor.submit(
+                new.submit, "new work", context={}, actor="a", request_id="new-request"
+            )
+            assert refused.result(timeout=5.0) is None
+            assert {record["id"] for record in store.load()} == {original.id}
+        finally:
+            release.set()
+        filler = pending.result(timeout=5.0)
+
+    assert filler is not None and new.take(timeout_seconds=0.01) is filler
+    assert new.take(timeout_seconds=0.01) is None
+    assert new.submit("next work", context={}, actor="b", request_id="next-request") is not None
+
+
+def test_a_failed_full_queue_recovery_does_not_acknowledge_or_reserve_work(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    store = JsonlPromptJobStore(tmp_path / "prompt-jobs.jsonl")
+    queue = PromptQueue(max_queued=1, clock=_Clock().read, store=store)
+    filler = queue.submit("other work", context={}, actor="a")
+    assert filler is not None
+    with monkeypatch.context() as failed_store:
+        failed_store.setattr(store, "compare_and_append", lambda _decide: False)
+        with pytest.raises(PromptNotSaved):
+            queue.submit("fix ci", context={}, actor="a", request_id="original-request")
+
+    assert queue.take(timeout_seconds=0.01) is filler
+    accepted = queue.submit("new work", context={}, actor="a", request_id="new-request")
+    assert accepted is not None
+    assert {record["id"] for record in store.load()} == {filler.id, accepted.id}
+
+
+def test_full_queue_recovery_preserves_a_concurrent_local_admissions_ownership(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    store = JsonlPromptJobStore(tmp_path / "prompt-jobs.jsonl")
+    queue = PromptQueue(max_queued=1, clock=_Clock().read, store=store)
+    filler = queue.submit("other work", context={}, actor="b")
+    assert filler is not None
+    recovering = threading.Event()
+    recover = threading.Event()
+    persisted = threading.Event()
+    publish = threading.Event()
+    compare_and_append = store.compare_and_append
+
+    def pause_recovery_and_publication(
+        decide: Callable[[Mapping[str, dict[str, Any]]], Sequence[Mapping[str, Any]]],
+    ) -> bool:
+        if not recovering.is_set():
+            recovering.set()
+            assert recover.wait(timeout=5.0)
+            return compare_and_append(decide)
+        saved = compare_and_append(decide)
+        persisted.set()
+        assert publish.wait(timeout=5.0)
+        return saved
+
+    monkeypatch.setattr(store, "compare_and_append", pause_recovery_and_publication)
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        recovery = executor.submit(
+            queue.submit, "fix ci", context={}, actor="a", request_id="original-request"
+        )
+        try:
+            assert recovering.wait(timeout=5.0)
+            assert queue.take(timeout_seconds=0.01) is filler
+            admission = executor.submit(
+                queue.submit, "fix ci", context={}, actor="a", request_id="original-request"
+            )
+            assert persisted.wait(timeout=5.0)
+            recover.set()
+            recovered = recovery.result(timeout=5.0)
+        finally:
+            recover.set()
+            publish.set()
+        accepted = admission.result(timeout=5.0)
+
+    assert accepted is not None
+    queue.cancel(accepted)
+    assert recovered is accepted and queue.get(accepted.id) is accepted
+    assert accepted.error_code == ERROR_CANCELLED
+    assert queue.take(timeout_seconds=0.01) is None
+    assert {record["id"] for record in store.load()} == {filler.id, accepted.id}
 
 
 def test_a_question_reopened_by_another_task_takes_an_answer_before_that_task_saves_it(

@@ -424,44 +424,54 @@ class PromptQueue:
         now = self._clock()
         # Read before taking the lock: it is a file on the deployment's home.
         hosted_hint = "" if conversation else self._read_hosted_conversation(actor)
+        job: PromptJob | None = None
+        record: dict[str, Any] | None = None
         with self._lock:
             self._forget_expired()
             known = self._request_job(request_id, parent_id="")
             if known is not None:
                 return known
-            if len(self._pending) + self._reserved >= self._max_queued:
-                return None
-            job = PromptJob(
-                id=f"p_{uuid.uuid4().hex}",
-                prompt=prompt,
-                context=dict(context),
-                actor=actor,
-                submitted_at=now,
-                request_id=request_id,
-                conversation=conversation,
-            )
-            job._hosted_hint = hosted_hint
-            with job._lock:
-                record = job._bump(now)
-            self._hold(job)
+            if len(self._pending) + self._reserved < self._max_queued:
+                job = PromptJob(
+                    id=f"p_{uuid.uuid4().hex}",
+                    prompt=prompt,
+                    context=dict(context),
+                    actor=actor,
+                    submitted_at=now,
+                    request_id=request_id,
+                    conversation=conversation,
+                )
+                job._hosted_hint = hosted_hint
+                with job._lock:
+                    record = job._bump(now)
+                self._hold(job)
         found: PromptJob | None = None
         if request_id and self._store is not None:
 
             def decide(newest: Mapping[str, dict[str, Any]]) -> list[dict[str, Any]]:
                 nonlocal found
                 found = _stored_request(newest, request_id, parent_id="")
-                return [] if found is not None else [record]
+                # Recovery needs no slot; without a reservation, never append new work.
+                return [] if found is not None or record is None else [record]
 
             saved = self._store.compare_and_append(decide)
-        else:
+        elif record is not None:
             saved = self._save(record)
+        else:
+            return None
         with self._lock:
-            self._unhold(job)
+            if job is not None:
+                self._unhold(job)
             if not saved:
                 raise PromptNotSaved
             if found is not None:
+                # A concurrent local admission may have persisted but not enqueued yet.
+                in_flight = self._in_flight.get(request_id)
+                if in_flight is not None and in_flight.id == found.id:
+                    return in_flight
                 return self._track(found)
-            self._enqueue(job)
+            if job is not None:
+                self._enqueue(job)
         return job
 
     def answer(self, parent: PromptJob, answer: str, *, request_id: str = "") -> PromptJob | None:
