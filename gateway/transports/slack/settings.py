@@ -14,7 +14,7 @@ from config.strict_config import StrictConfigModel
 from gateway.core.lifecycle.errors import GatewayConfigurationError
 from infrastructure.turn_host.concurrency import turn_limit_for_profile
 from integrations.messaging_security import MessagingIdentityPolicy, MessagingPlatform
-from integrations.store import get_integration
+from integrations.store import get_single_integration
 
 logger = logging.getLogger(__name__)
 
@@ -87,7 +87,7 @@ def load_slack_credentials() -> Mapping[str, Any]:
     """Load Slack credentials from the integration store."""
 
     try:
-        record = get_integration(MessagingPlatform.SLACK.value)
+        record = get_single_integration(MessagingPlatform.SLACK.value)
     except Exception as exc:
         raise GatewayConfigurationError("Could not load Slack integration") from exc
 
@@ -114,7 +114,7 @@ def store_app_token(credentials: Mapping[str, Any]) -> str:
 def store_allowed_users(credentials: Mapping[str, Any]) -> list[str]:
     raw_policy = credentials.get("identity_policy")
 
-    if not raw_policy:
+    if raw_policy is None:
         return []
 
     if not isinstance(raw_policy, Mapping):
@@ -185,7 +185,11 @@ def require_transport_credential(
 
 
 def choose_authorized_users(env: SlackGatewayEnv, credentials: Mapping[str, Any]) -> list[str]:
-    return store_allowed_users(credentials) or env.allowed_users
+    return (
+        store_allowed_users(credentials)
+        if credentials.get("identity_policy") is not None
+        else env.allowed_users
+    )
 
 
 def load_slack_gateway_settings() -> SlackGatewaySettings:

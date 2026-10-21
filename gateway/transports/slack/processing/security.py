@@ -11,6 +11,7 @@ from dataclasses import dataclass
 
 from config.constants.gateway import ROTATE_SESSION
 from gateway.core.middleware.identity_policy import (
+    authorize_pairing,
     load_identity_policy,
 )
 from integrations.messaging_security import (
@@ -19,7 +20,6 @@ from integrations.messaging_security import (
     MessagingPlatform,
     audit_log_inbound_message,
     authorize_inbound_message,
-    complete_pairing,
     message_hash,
 )
 
@@ -41,8 +41,6 @@ class SlackInboundDecision:
 
     allowed: bool
     reply_text: str = ""
-    persist_policy: bool = False
-    updated_policy: MessagingIdentityPolicy | None = None
 
 
 def _audit(
@@ -63,32 +61,24 @@ def _audit(
     )
 
 
-def _merge_env_allowlist(
-    policy: MessagingIdentityPolicy,
-    env_allowed_user_ids: list[str],
-) -> MessagingIdentityPolicy:
-    if env_allowed_user_ids and not policy.allowed_user_ids:
-        policy.allowed_user_ids = list(env_allowed_user_ids)
-        policy.inbound_enabled = True
-    return policy
-
-
 def _handle_pair_command(
     *,
     user_id: str,
     channel_id: str,
     text: str,
-    stripped: str,
-    policy: MessagingIdentityPolicy,
+    env_allowed_user_ids: list[str],
 ) -> SlackInboundDecision:
-    code = stripped.split(maxsplit=1)[1] if " " in stripped else ""
-    ok, msg = complete_pairing(policy=policy, user_id=user_id, code=code)
+    ok, msg = authorize_pairing(
+        _PLATFORM,
+        user_id=user_id,
+        chat_id=channel_id,
+        text=text,
+        fallback_allowed_user_ids=env_allowed_user_ids,
+    )
     _audit(user_id=user_id, channel_id=channel_id, text=text, authorized=ok, reason=msg)
     return SlackInboundDecision(
         allowed=False,
         reply_text=msg,
-        persist_policy=True,
-        updated_policy=policy,
     )
 
 
@@ -104,7 +94,7 @@ def _authorize_sender(
     if not policy.allowed_user_ids and not allow_open_workspace:
         return None
     if allow_open_workspace and not policy.allowed_user_ids:
-        return AuthorizationResult(allowed=True, reason="open workspace")
+        policy = policy.model_copy(update={"require_dm_pairing": False})
     return authorize_inbound_message(
         policy=policy,
         user_id=user_id,
@@ -159,8 +149,9 @@ def enforce_inbound_slack_message_security(
     allow_open_workspace: bool = False,
 ) -> SlackInboundDecision:
     """Authorize inbound Slack text and handle /pair, /new, /help."""
-    _record, policy = load_identity_policy(_PLATFORM)
-    policy = _merge_env_allowlist(policy, env_allowed_user_ids)
+    _record, policy = load_identity_policy(
+        _PLATFORM, fallback_allowed_user_ids=env_allowed_user_ids
+    )
 
     stripped = text.strip()
     lower = stripped.lower()
@@ -170,8 +161,7 @@ def enforce_inbound_slack_message_security(
             user_id=user_id,
             channel_id=channel_id,
             text=text,
-            stripped=stripped,
-            policy=policy,
+            env_allowed_user_ids=env_allowed_user_ids,
         )
 
     if lower in {"/help", "/start"}:

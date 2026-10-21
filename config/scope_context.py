@@ -24,8 +24,8 @@ _CURRENT_SCOPE: ContextVar[StorageScope | None] = ContextVar("opensre_storage_sc
 
 
 @contextmanager
-def bound_storage_scope(scope: StorageScope) -> Iterator[StorageScope]:
-    """Bind ``scope`` for the duration of the block."""
+def bound_storage_scope(scope: StorageScope | None) -> Iterator[StorageScope | None]:
+    """Bind ``scope`` (or the host context for ``None``), then restore the caller's scope."""
     token = _CURRENT_SCOPE.set(scope)
     try:
         yield scope

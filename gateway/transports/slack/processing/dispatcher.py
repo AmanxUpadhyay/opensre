@@ -52,7 +52,6 @@ from gateway.transports.slack.processing.thread_history import (
 from gateway.transports.slack.settings import SlackGatewaySettings
 from infrastructure.analytics.usage_context import UsageSurface, bound_usage_context
 from infrastructure.turn_host.turn_callback import TurnCallback
-from integrations.messaging_security import MessagingPlatform
 
 
 # Only an explicit 402 from the credit ledger posts this; UNCONFIGURED /
@@ -250,7 +249,6 @@ class SlackTurnDispatcher:
 
         return apply_inbound_decision(
             decision,
-            platform=MessagingPlatform.SLACK.value,
             resolver=self._session_resolver,
             scope=scope,
             conversation_key=inbound.conversation_key,

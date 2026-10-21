@@ -41,6 +41,7 @@ import os
 import tempfile
 import uuid
 from collections.abc import Callable
+from copy import deepcopy
 from pathlib import Path
 from typing import Any
 
@@ -71,6 +72,10 @@ _STRUCTURAL_RECORD_FIELDS = frozenset({"id", "service", "status", "instances"})
 
 class IntegrationStoreLockTimeout(TimeoutError):
     """Raised when the integration store lock cannot be acquired in time."""
+
+
+class AmbiguousIntegrationInstance(ValueError):
+    """Raised when an operation requiring one active instance has several targets."""
 
 
 def _lock_timeout_error() -> IntegrationStoreLockTimeout:
@@ -304,6 +309,67 @@ def get_integration(service: str) -> dict[str, Any] | None:
         if i.get("service") == service and i.get("status") == "active":
             return _record_with_flat_credentials_view(i)
     return None
+
+
+def _single_active_record(
+    integrations: list[dict[str, Any]], service: str
+) -> dict[str, Any] | None:
+    records = [
+        record
+        for record in integrations
+        if record.get("service") == service and record.get("status") == "active"
+    ]
+    if len(records) > 1 or (records and len(records[0].get("instances", [])) > 1):
+        raise AmbiguousIntegrationInstance(
+            f"Multiple active {service} integration records or instances are configured. "
+            "This operation supports one active instance; keep a single active instance "
+            "before retrying."
+        )
+    return records[0] if records else None
+
+
+def get_single_integration(service: str) -> dict[str, Any] | None:
+    """Return one active record with flat credentials, rejecting ambiguous instances."""
+    record = _single_active_record(load_integrations(), service)
+    return _record_with_flat_credentials_view(record) if record is not None else None
+
+
+def update_single_instance_credentials[Result](
+    service: str, mutate: Callable[[dict[str, Any]], Result]
+) -> Result:
+    """Read, mutate, and write the sole active instance's credentials under one lock.
+
+    The callback must not perform other store operations. Exceptions leave the store
+    unchanged; a missing instance is created only when the callback changes credentials.
+    """
+    results: list[Result] = []
+
+    def _mutate(data: dict[str, Any]) -> bool:
+        integrations: list[dict[str, Any]] = data.setdefault("integrations", [])
+        record = _single_active_record(integrations, service)
+        instances = record.get("instances", []) if record is not None else []
+        instance = instances[0] if instances else {"name": "default", "tags": {}}
+        original = instance.get("credentials", {})
+        credentials = deepcopy(original)
+        results.append(mutate(credentials))
+        if credentials == original:
+            return False
+        instance["credentials"] = credentials
+        if record is None:
+            integrations.append(
+                {
+                    "id": f"{service}-{uuid.uuid4().hex[:8]}",
+                    "service": service,
+                    "status": "active",
+                    "instances": [instance],
+                }
+            )
+        elif not instances:
+            record["instances"] = [instance]
+        return True
+
+    _locked_update(_mutate)
+    return results[0]
 
 
 def _wrap_as_instances(entry: dict[str, Any]) -> list[dict[str, Any]]:

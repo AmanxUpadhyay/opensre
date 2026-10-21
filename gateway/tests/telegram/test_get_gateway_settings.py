@@ -21,7 +21,7 @@ from gateway.transports.telegram.settings import (
 )
 from integrations.messaging_security import MessagingIdentityPolicy
 
-_STORE_PATH = "gateway.transports.telegram.settings.get_integration"
+_STORE_PATH = "gateway.transports.telegram.settings.get_single_integration"
 
 
 @pytest.fixture(autouse=True)

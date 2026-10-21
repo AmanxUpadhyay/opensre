@@ -18,6 +18,7 @@ from gateway.core.middleware.approvals import (
     ApprovalBroker,
     arguments_preview,
 )
+from gateway.core.middleware.identity_policy import is_user_authorized
 from gateway.transports.telegram.poller.client import TelegramBotClient
 from gateway.transports.telegram.settings import TelegramCallbackQuery
 
@@ -110,8 +111,12 @@ def handle_callback_query(
     else:
         return False
 
-    allowed = set(allowed_user_ids)
-    if not allowed or event.user_id not in allowed:
+    if not is_user_authorized(
+        "telegram",
+        user_id=event.user_id,
+        chat_id=event.chat_id,
+        fallback_allowed_user_ids=allowed_user_ids,
+    ):
         logger.info(
             "[telegram-gateway] approval click from unauthorized user=%s ignored",
             event.user_id,

@@ -39,21 +39,27 @@ Discord turns are billed and stored against the organization in `ORGANIZATION_ID
 
 Set `DISCORD_SILO_GUILD_IDS` on any deployment holding real credentials. Leaving it unset means any server that adds the bot inherits that organization's integrations.
 
-Approving a write action always requires `DISCORD_ALLOWED_USERS`. `DISCORD_ALLOW_OPEN_GUILD` opens chat, never approvals, so with no allowlist every Approve/Deny click is ignored.
+Approving a write action always requires a non-empty trusted-user allowlist, configured with `messaging allow`/pairing or, without a saved policy, `DISCORD_ALLOWED_USERS`. `DISCORD_ALLOW_OPEN_GUILD` opens chat, never approvals, so with no allowlist every Approve/Deny click is ignored.
 
-Allow yourself explicitly:
+Before starting the gateway, allow your first trusted user explicitly. In Discord, enable **User Settings → Advanced → Developer Mode**, then right-click your profile and choose **Copy User ID**:
 
 ```bash
 opensre messaging allow -p discord -u <your_discord_user_id>
 ```
 
-Start the gateway:
+A saved messaging policy takes precedence over `DISCORD_ALLOWED_USERS`, even when its allowlist is empty. Revoking the last stored user does not fall back to environment IDs; use `messaging allow` to restore access.
+
+With `DISCORD_ALLOW_OPEN_GUILD=1`, an empty allowlist still permits server chat. Turn off open-guild mode if you need revocation to block chat access; inbound and channel restrictions still apply in open mode.
+
+Start the gateway after allowing the first user:
 
 ```bash
 opensre gateway start
 ```
 
 When configured, status includes `discord: connected via gateway`.
+
+With the default closed-guild settings, a pairing code alone does not enable the Discord gateway. Use `messaging allow` for the first user; pairing can add other users once the gateway is running.
 
 ## Credentials
 
@@ -86,12 +92,17 @@ Gateway turns use the same agent session model as Slack and Telegram: `/new`, `/
 
 Each member gets their own conversation, even in a shared channel: your history and `/new` never affect a teammate's. Integrations you connect are shared by the whole organization.
 
-Pairing:
+To add another user by pairing, first allow the initial user and start the gateway as above:
 
 ```bash
 opensre messaging pair -p discord
-# then send /pair <code> to the bot
 ```
+
+Share the code privately with the user you want to add. Have them DM the running bot and send `/pair <code>` within 15 minutes. Codes are single-use.
+
+Pairing obeys inbound and chat restrictions too. If you restrict allowed chats, include the DM or channel where the user will pair.
+
+`opensre messaging status -p discord` distinguishes a saved policy from defaults and shows whether a pairing code is valid, expired, absent, or exhausted by failed attempts. Without a saved policy, environment settings may affect authorization. It does not test credentials or confirm that the gateway is running; use `opensre gateway status` for gateway status.
 
 ## Verify
 

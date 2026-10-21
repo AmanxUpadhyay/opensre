@@ -20,6 +20,7 @@ from gateway.core.middleware.approvals import (
     ApprovalBroker,
     arguments_preview,
 )
+from gateway.core.middleware.identity_policy import is_user_authorized
 from gateway.transports.slack.client import SlackMessagingClient
 
 logger = logging.getLogger("gateway")
@@ -104,11 +105,15 @@ def handle_block_actions_payload(
     actions = payload.get("actions")
     if not user_id or not isinstance(actions, list):
         return False
-    allowed_set = set(allowed_user_ids)
-    if allowed_set and user_id not in allowed_set:
+    channel_id = str((payload.get("channel") or {}).get("id") or "")
+    if not is_user_authorized(
+        "slack",
+        user_id=user_id,
+        chat_id=channel_id,
+        fallback_allowed_user_ids=allowed_user_ids,
+        allow_open=allow_open_workspace,
+    ):
         logger.info("[slack-gateway] approval click from unauthorized user=%s ignored", user_id)
-        return False
-    if not allowed_set and not allow_open_workspace:
         return False
     resolved = False
     for action in actions:

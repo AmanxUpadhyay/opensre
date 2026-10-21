@@ -10,7 +10,7 @@ import pytest
 from gateway.core.lifecycle.errors import GatewayConfigurationError
 from gateway.transports.discord.settings import load_discord_gateway_settings
 
-_STORE_PATH = "gateway.transports.discord.settings.get_integration"
+_STORE_PATH = "gateway.transports.discord.settings.get_single_integration"
 
 
 @pytest.fixture(autouse=True)

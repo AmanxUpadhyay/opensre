@@ -12,6 +12,7 @@ from gateway.transports.discord.approvals import handle_component_interaction
 def _interaction(*, user_id: str, approval_id: str = "appr-1") -> SimpleNamespace:
     return SimpleNamespace(
         user=SimpleNamespace(id=user_id),
+        channel_id="222",
         data={"custom_id": f"{APPROVE_ACTION_ID}:{approval_id}"},
     )
 

@@ -14,7 +14,7 @@ from config.strict_config import StrictConfigModel
 from gateway.core.lifecycle.errors import GatewayConfigurationError
 from infrastructure.scheduling.scheduler.credentials import resolve_buzz_credentials
 from integrations.messaging_security import MessagingIdentityPolicy, MessagingPlatform
-from integrations.store import get_integration
+from integrations.store import get_single_integration
 
 logger = logging.getLogger(__name__)
 
@@ -93,7 +93,7 @@ class BuzzInboundMessage:
 def load_buzz_credentials() -> Mapping[str, Any]:
     """Load Buzz credentials from the integration store."""
     try:
-        record = get_integration(MessagingPlatform.BUZZ.value)
+        record = get_single_integration(MessagingPlatform.BUZZ.value)
     except Exception as exc:
         raise GatewayConfigurationError("Could not load Buzz integration") from exc
 
@@ -112,7 +112,7 @@ def load_buzz_credentials() -> Mapping[str, Any]:
 def store_allowed_pubkeys(credentials: Mapping[str, Any]) -> list[str]:
     raw_policy = credentials.get("identity_policy")
 
-    if not raw_policy:
+    if raw_policy is None:
         return []
 
     if not isinstance(raw_policy, Mapping):
@@ -127,7 +127,11 @@ def store_allowed_pubkeys(credentials: Mapping[str, Any]) -> list[str]:
 
 
 def choose_allowed_pubkeys(env: BuzzGatewayEnv, credentials: Mapping[str, Any]) -> list[str]:
-    pubkeys = store_allowed_pubkeys(credentials) or env.allowed_pubkeys
+    pubkeys = (
+        store_allowed_pubkeys(credentials)
+        if credentials.get("identity_policy") is not None
+        else env.allowed_pubkeys
+    )
 
     if not pubkeys:
         logger.warning("Buzz allowed pubkeys are not configured")

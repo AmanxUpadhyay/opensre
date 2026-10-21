@@ -1,85 +1,99 @@
-"""Load and persist a chat transport's inbound identity policy.
-
-Stored on the platform's integration record
-(``credentials["identity_policy"]``). Transports pass the platform name;
-this module talks only to the integration store and messaging-security
-primitives so ``gateway.core`` stays free of transport imports.
-"""
+"""Resolve live inbound identities and atomically authorize pairing attempts."""
 
 from __future__ import annotations
 
-from typing import Any, Protocol
+from collections.abc import Sequence
+from typing import Any
 
-from integrations.messaging_security import MessagingIdentityPolicy
-from integrations.store import get_integration, upsert_instance
+from config.scope_context import bound_storage_scope
+from integrations.messaging_policy_store import load_identity_policy as load_stored_identity_policy
+from integrations.messaging_policy_store import update_identity_policy
+from integrations.messaging_security import (
+    MessagingIdentityPolicy,
+    authorize_inbound_message,
+    complete_pairing,
+)
 
 
-class InboundPolicyDecision(Protocol):
-    """The two fields any transport's inbound decision carries for persistence."""
-
-    @property
-    def persist_policy(self) -> bool:
-        """Whether this decision changed the policy and asked for a write."""
-
-    @property
-    def updated_policy(self) -> MessagingIdentityPolicy | None:
-        """The policy to store when ``persist_policy`` is set."""
+def has_stored_identity_policy(record: dict[str, Any] | None) -> bool:
+    """An explicit policy, including an empty one, owns authorization over startup defaults."""
+    return record is not None and isinstance(
+        (record.get("credentials") or {}).get("identity_policy"), dict
+    )
 
 
 def load_identity_policy(
-    platform: str,
+    platform: str, *, fallback_allowed_user_ids: Sequence[str] = ()
 ) -> tuple[dict[str, Any] | None, MessagingIdentityPolicy]:
-    """Return the platform's stored record and its identity policy.
+    """Read the gateway's config policy, using startup identities only without one.
 
-    A platform with no stored record (or no policy on it) gets a permissive
-    default — inbound enabled, empty allowlist — so first-run transports work
-    before anyone has configured identities.
+    The bot and CLI use the unbound configuration store. A turn's organization
+    scope selects its tool credentials, not a different inbound bot policy.
+    Explicit integration-store overrides still apply in the host context.
     """
-    record = get_integration(platform)
-    if record is None:
-        return None, MessagingIdentityPolicy(inbound_enabled=True)
-    credentials = record.get("credentials", {})
-    raw_policy = credentials.get("identity_policy")
-    if raw_policy and isinstance(raw_policy, dict):
-        return record, MessagingIdentityPolicy.model_validate(raw_policy)
-    return record, MessagingIdentityPolicy(inbound_enabled=True)
+    with bound_storage_scope(None):
+        record, policy = load_stored_identity_policy(platform)
+    if not has_stored_identity_policy(record):
+        policy.allowed_user_ids = list(fallback_allowed_user_ids)
+        policy._invalidate_allowed_user_id_cache()
+    return record, policy
 
 
-def save_identity_policy(
+def authorize_pairing(
     platform: str,
-    record: dict[str, Any] | None,
-    policy: MessagingIdentityPolicy,
-) -> None:
-    """Store ``policy`` on the platform's record, preserving instance identity."""
-    instances = record.get("instances", []) if record else []
-    first_instance = instances[0] if instances else {}
-    instance_name = (
-        first_instance.get("name", "default") if isinstance(first_instance, dict) else "default"
-    )
-    credentials = dict(record.get("credentials", {})) if record else {}
-    credentials["identity_policy"] = policy.model_dump(mode="json")
-    upsert_instance(
-        platform,
-        {
-            "name": instance_name,
-            "tags": first_instance.get("tags", {}) if isinstance(first_instance, dict) else {},
-            "credentials": credentials,
-        },
-        record_id=record.get("id") if record else None,
-    )
+    *,
+    user_id: str,
+    chat_id: str,
+    text: str,
+    fallback_allowed_user_ids: Sequence[str],
+) -> tuple[bool, str]:
+    """Validate and consume a pairing code against the latest policy in one transaction."""
+
+    def pair(policy: MessagingIdentityPolicy) -> tuple[bool, str]:
+        result = authorize_inbound_message(
+            policy=policy, user_id=user_id, chat_id=chat_id, message_text=text
+        )
+        if not result:
+            return (
+                False,
+                "Pairing is unavailable. Ask the operator to check inbound access and generate a pairing code.",
+            )
+        if not result.is_pairing_attempt:
+            return True, result.reason
+        return complete_pairing(
+            policy=policy, user_id=user_id, code=text.strip().split(maxsplit=1)[1]
+        )
+
+    with bound_storage_scope(None):
+        return update_identity_policy(
+            platform,
+            pair,
+            default_policy=MessagingIdentityPolicy(
+                inbound_enabled=True, allowed_user_ids=list(fallback_allowed_user_ids)
+            ),
+        )
 
 
-def persist_policy_if_needed(platform: str, decision: InboundPolicyDecision) -> None:
-    """Write the decision's updated policy, when it carries one."""
-    if not decision.persist_policy or decision.updated_policy is None:
-        return
-    record, _ = load_identity_policy(platform)
-    save_identity_policy(platform, record, decision.updated_policy)
+def is_user_authorized(
+    platform: str,
+    *,
+    user_id: str,
+    chat_id: str,
+    fallback_allowed_user_ids: Sequence[str],
+    allow_open: bool = False,
+) -> bool:
+    """Check live policy for approval clicks without reusing a startup allowlist."""
+    _, policy = load_identity_policy(platform, fallback_allowed_user_ids=fallback_allowed_user_ids)
+    if not policy.allowed_user_ids:
+        if not allow_open:
+            return False
+        policy.require_dm_pairing = False
+    return bool(authorize_inbound_message(policy=policy, user_id=user_id, chat_id=chat_id))
 
 
 __all__ = [
-    "InboundPolicyDecision",
+    "authorize_pairing",
+    "has_stored_identity_policy",
+    "is_user_authorized",
     "load_identity_policy",
-    "persist_policy_if_needed",
-    "save_identity_policy",
 ]

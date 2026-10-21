@@ -111,7 +111,7 @@ Reinstall the app after adding scopes so the bot token picks them up. Invite the
 `slack_search_messages` is the one tool a bot token can never run — Slack refuses bot tokens for workspace message search, no matter which scopes you grant. To enable search, add `search:read` under **OAuth & Permissions → User Token Scopes**, reinstall, and set `SLACK_ACCESS_TOKEN` to the resulting user token (`xoxp-…`). Leave it unset and search simply stays hidden from the agent; every other Slack tool works on the bot token alone.
 </Note>
 
-### Allow your Slack user
+### Allow your first Slack user before starting the gateway
 
 Find your Slack **member ID** (`U…`) in the Slack app: profile → **⋯** → **Copy member ID**.
 
@@ -120,13 +120,21 @@ opensre messaging allow -p slack -u U0123ABCD
 # or in REPL: /messaging allow -p slack -u U0123ABCD
 ```
 
-or set `SLACK_ALLOWED_USERS=U0123ABCD` in `.env`. The integration store takes precedence when both are set.
+or set `SLACK_ALLOWED_USERS=U0123ABCD` in `.env` when no messaging policy has been saved. A saved policy takes precedence, even when its allowlist is empty. Revoking the last stored user does not fall back to environment IDs; use `messaging allow` to restore access.
 
 <Warning>
   Use the Slack **member ID** (`U…`) from **Copy member ID**, not `@display-name`. Handles can be reassigned; inbound authorization only matches stable user IDs.
 </Warning>
 
-For dogfood only, you may set `SLACK_ALLOW_OPEN_WORKSPACE=1` instead.
+For dogfood only, you may set `SLACK_ALLOW_OPEN_WORKSPACE=1` instead. In this mode an empty allowlist still permits chat, including after revoking the last user. Turn off open-workspace mode if you need revocation to block access; inbound and channel restrictions still apply in open mode.
+
+Start the gateway only after allowing at least one trusted user:
+
+```bash
+opensre gateway start
+```
+
+With the default closed-workspace settings, a pairing code alone does not enable the Slack gateway. Use `messaging allow` for the first user; pairing can add other users once the gateway is running.
 
 ### DM pairing (optional)
 
@@ -134,12 +142,16 @@ For dogfood only, you may set `SLACK_ALLOW_OPEN_WORKSPACE=1` instead.
 opensre messaging pair -p slack
 ```
 
-Then DM the bot (or mention it) and send `/pair <code>`.
+Share the code privately with the user you want to add. Have them DM the running bot and send `/pair <code>` within 15 minutes. Codes are single-use.
+
+Pairing obeys inbound and chat restrictions too. If you restrict allowed chats, include the DM or channel where the user will pair.
 
 ```bash
 opensre messaging status -p slack
 opensre messaging revoke -p slack -u U0123ABCD
 ```
+
+`messaging status` distinguishes a saved policy from defaults and shows whether a pairing code is valid, expired, absent, or exhausted by failed attempts. Without a saved policy, environment settings may affect authorization. It does not test credentials or confirm that the gateway is running; use `opensre gateway status` for gateway status.
 
 ## Slack tools
 

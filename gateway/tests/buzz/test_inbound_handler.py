@@ -17,9 +17,9 @@ from integrations.buzz.client import BuzzClient
 @pytest.fixture(autouse=True)
 def _no_integration_store(monkeypatch: pytest.MonkeyPatch) -> None:
     """Keep the identity-policy lookup off the developer's real integration store."""
-    from gateway.core.middleware import identity_policy
+    from integrations import messaging_policy_store
 
-    monkeypatch.setattr(identity_policy, "get_integration", lambda *_a, **_kw: None)
+    monkeypatch.setattr(messaging_policy_store, "get_single_integration", lambda *_a, **_kw: None)
 
 
 def test_unauthorized_sender_never_invokes_the_callback() -> None:

@@ -9,7 +9,6 @@ from gateway.core.storage import SessionResolver
 from gateway.transports.telegram.inbound_security import InboundDecision
 from gateway.transports.telegram.poller.client import TelegramBotClient
 from gateway.transports.telegram.settings import TelegramInboundMessage
-from integrations.messaging_security import MessagingPlatform
 
 
 def resolve_or_rotate_session(
@@ -27,7 +26,6 @@ def resolve_or_rotate_session(
 
     return apply_inbound_decision(
         decision,
-        platform=MessagingPlatform.TELEGRAM.value,
         resolver=session_resolver,
         scope=scope,
         conversation_key=event.user_id,

@@ -3,12 +3,15 @@
 from __future__ import annotations
 
 import json
+import time
 from pathlib import Path
+from typing import Any
 
 import pytest
 from click.testing import CliRunner
 
-from integrations.messaging_security import verify_pairing_code
+from integrations.messaging_security import hash_pairing_code, verify_pairing_code
+from integrations.store import upsert_instance
 from surfaces.cli.commands.messaging import messaging
 
 
@@ -22,6 +25,19 @@ def _isolated_store(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
 
 
 class TestMessagingPairCommand:
+    @pytest.mark.parametrize("platform", ["slack", "discord"])
+    def test_first_user_bootstrap_precedes_gateway_and_pairing(
+        self, _isolated_store: Path, platform: str
+    ) -> None:
+        result = CliRunner().invoke(messaging, ["pair", "--platform", platform])
+
+        assert result.exit_code == 0
+        output = " ".join(result.output.split())
+        allow_step = output.index(f"opensre messaging allow -p {platform} -u")
+        gateway_step = output.index("opensre gateway start")
+        pair_step = output.index("send: /pair")
+        assert allow_step < gateway_step < pair_step
+
     def test_pair_generates_code(self, _isolated_store: Path) -> None:
         runner = CliRunner()
         result = runner.invoke(messaging, ["pair", "--platform", "telegram"])
@@ -122,6 +138,37 @@ class TestMessagingAllowCommand:
 
 
 class TestMessagingRevokeCommand:
+    def test_revoke_normalizes_input_and_removes_legacy_entries(
+        self, _isolated_store: Path
+    ) -> None:
+        upsert_instance(
+            "telegram",
+            {
+                "name": "default",
+                "credentials": {
+                    "identity_policy": {
+                        "allowed_user_ids": ["@legacy", " @legacy ", "99", "@legacy"],
+                        "pairing_secret_hash": hash_pairing_code("ABC123"),
+                        "pairing_created_at": time.time(),
+                        "pairing_attempts": 2,
+                    }
+                },
+            },
+        )
+
+        result = CliRunner().invoke(
+            messaging, ["revoke", "--platform", "telegram", "--user-id", " @legacy "]
+        )
+
+        assert result.exit_code == 0
+        assert "Removed user @legacy" in result.output
+        data = json.loads(_isolated_store.read_text())
+        policy = data["integrations"][0]["instances"][0]["credentials"]["identity_policy"]
+        assert policy["allowed_user_ids"] == ["99"]
+        assert policy["pairing_secret_hash"] is None
+        assert policy["pairing_created_at"] is None
+        assert policy["pairing_attempts"] == 0
+
     def test_revoke_removes_user(self, _isolated_store: Path) -> None:
         runner = CliRunner()
         # First add a user
@@ -137,12 +184,81 @@ class TestMessagingRevokeCommand:
 
     def test_revoke_nonexistent_user_warns(self, _isolated_store: Path) -> None:
         runner = CliRunner()
+        before = _isolated_store.read_bytes()
         result = runner.invoke(messaging, ["revoke", "--platform", "discord", "--user-id", "ghost"])
         assert result.exit_code == 0
         assert "not in the allowed list" in result.output
+        assert _isolated_store.read_bytes() == before
 
 
 class TestMessagingStatusCommand:
+    @pytest.mark.parametrize("explicit_policy", [False, True])
+    def test_status_uses_runtime_inbound_default(
+        self, _isolated_store: Path, explicit_policy: bool
+    ) -> None:
+        credentials: dict[str, Any] = {"bot_token": "synthetic-secret-token"}
+        if explicit_policy:
+            credentials["identity_policy"] = {}
+        upsert_instance("telegram", {"name": "default", "credentials": credentials})
+        before = _isolated_store.read_bytes()
+
+        result = CliRunner().invoke(messaging, ["status", "--platform", "telegram"])
+
+        assert result.exit_code == 0
+        expected = "No" if explicit_policy else "Yes"
+        assert f"Inbound enabled: {expected}" in " ".join(result.output.split())
+        source = "Stored policy" if explicit_policy else "Defaults (no stored policy)"
+        assert f"Policy source: {source}" in " ".join(result.output.split())
+        if not explicit_policy:
+            assert "Environment settings may affect gateway authorization" in result.output
+        assert "synthetic-secret-token" not in result.output
+        assert "connected" not in result.output.lower()
+        assert _isolated_store.read_bytes() == before
+
+    @pytest.mark.parametrize(
+        ("secret", "age_seconds", "attempts", "expected"),
+        [
+            (False, None, 0, "Absent"),
+            (True, 0, 0, "Valid"),
+            (True, 901, 0, "Expired"),
+            (True, None, 0, "Expired"),
+            (True, 0, 5, "Exhausted"),
+        ],
+    )
+    def test_status_reports_usable_pairing_state_without_secrets(
+        self,
+        _isolated_store: Path,
+        secret: bool,
+        age_seconds: int | None,
+        attempts: int,
+        expected: str,
+    ) -> None:
+        stored_hash = hash_pairing_code("ABC123")
+        upsert_instance(
+            "telegram",
+            {
+                "name": "default",
+                "credentials": {
+                    "identity_policy": {
+                        "pairing_secret_hash": stored_hash if secret else None,
+                        "pairing_created_at": (
+                            time.time() - age_seconds if age_seconds is not None else None
+                        ),
+                        "pairing_attempts": attempts,
+                    }
+                },
+            },
+        )
+        before = _isolated_store.read_bytes()
+
+        result = CliRunner().invoke(messaging, ["status", "--platform", "telegram"])
+
+        assert result.exit_code == 0
+        assert f"Pairing code: {expected}" in " ".join(result.output.split())
+        assert stored_hash not in result.output
+        assert "ABC123" not in result.output
+        assert _isolated_store.read_bytes() == before
+
     def test_status_no_integration(self, _isolated_store: Path) -> None:
         runner = CliRunner()
         result = runner.invoke(messaging, ["status", "--platform", "telegram"])
@@ -177,3 +293,39 @@ class TestMessagingGroupNoSubcommand:
         assert "not this shell" in result.output
         assert "/pair" in result.output
         assert "gateway" in result.output.lower()
+
+
+@pytest.mark.parametrize("multiple_records", [False, True])
+@pytest.mark.parametrize("command", ["pair", "allow", "revoke", "status"])
+def test_ambiguous_integrations_fail_without_changes(
+    _isolated_store: Path, multiple_records: bool, command: str
+) -> None:
+    instance = {"name": "first", "credentials": {"bot_token": "synthetic-secret-token"}}
+    records: list[dict[str, Any]] = [
+        {"id": "telegram-first", "service": "telegram", "status": "active", "instances": [instance]}
+    ]
+    if multiple_records:
+        records.append(
+            {
+                "id": "telegram-second",
+                "service": "telegram",
+                "status": "active",
+                "instances": [{"name": "second", "credentials": {}}],
+            }
+        )
+    else:
+        records[0]["instances"].append({"name": "second", "credentials": {}})
+    _isolated_store.write_text(json.dumps({"version": 2, "integrations": records}))
+    before = _isolated_store.read_bytes()
+    arguments = [command, "--platform", "telegram"]
+    if command in {"allow", "revoke"}:
+        arguments.extend(["--user-id", "99"])
+
+    result = CliRunner().invoke(messaging, arguments)
+
+    assert result.exit_code != 0
+    assert "Error:" in result.output
+    assert "multiple" in result.output.lower()
+    assert "opensre integrations" in " ".join(result.output.split())
+    assert "synthetic-secret-token" not in result.output
+    assert _isolated_store.read_bytes() == before

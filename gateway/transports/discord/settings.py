@@ -14,7 +14,7 @@ from config.strict_config import StrictConfigModel
 from gateway.core.lifecycle.errors import GatewayConfigurationError
 from infrastructure.turn_host.concurrency import turn_limit_for_profile
 from integrations.messaging_security import MessagingIdentityPolicy, MessagingPlatform
-from integrations.store import get_integration
+from integrations.store import get_single_integration
 
 logger = logging.getLogger(__name__)
 
@@ -55,7 +55,7 @@ class DiscordGatewayEnv(BaseSettings):
 def load_discord_credentials() -> Mapping[str, Any]:
     """Load Discord credentials from the integration store."""
     try:
-        record = get_integration(MessagingPlatform.DISCORD.value)
+        record = get_single_integration(MessagingPlatform.DISCORD.value)
     except Exception as exc:
         raise GatewayConfigurationError("Could not load Discord integration") from exc
 
@@ -77,7 +77,7 @@ def store_bot_token(credentials: Mapping[str, Any]) -> str:
 
 def store_allowed_users(credentials: Mapping[str, Any]) -> list[str]:
     raw_policy = credentials.get("identity_policy")
-    if not raw_policy:
+    if raw_policy is None:
         return []
     if not isinstance(raw_policy, Mapping):
         raise GatewayConfigurationError("Discord identity_policy must be an object")
@@ -98,7 +98,11 @@ def choose_bot_token(env: DiscordGatewayEnv, credentials: Mapping[str, Any]) -> 
 
 
 def choose_authorized_users(env: DiscordGatewayEnv, credentials: Mapping[str, Any]) -> list[str]:
-    return store_allowed_users(credentials) or env.allowed_users
+    return (
+        store_allowed_users(credentials)
+        if credentials.get("identity_policy") is not None
+        else env.allowed_users
+    )
 
 
 def load_discord_gateway_settings() -> DiscordGatewaySettings:

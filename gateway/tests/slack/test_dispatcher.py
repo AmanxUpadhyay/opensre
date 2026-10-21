@@ -29,8 +29,7 @@ from infrastructure.turn_host.status_messages import user_facing_error_message
 def _isolate_slack_integration_store():
     """Worker tests must not depend on the developer's ~/.opensre integrations."""
     with (
-        patch("gateway.core.middleware.identity_policy.get_integration", return_value=None),
-        patch("gateway.core.middleware.identity_policy.upsert_instance"),
+        patch("integrations.messaging_policy_store.get_single_integration", return_value=None),
     ):
         yield
 

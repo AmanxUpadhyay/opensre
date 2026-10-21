@@ -12,15 +12,14 @@ from dataclasses import dataclass
 
 from config.constants.gateway import ROTATE_SESSION
 from gateway.core.middleware.identity_policy import (
+    authorize_pairing,
     load_identity_policy,
 )
 from integrations.messaging_security import (
     AuthorizationResult,
-    MessagingIdentityPolicy,
     MessagingPlatform,
     audit_log_inbound_message,
     authorize_inbound_message,
-    complete_pairing,
     message_hash,
 )
 
@@ -31,8 +30,6 @@ class InboundDecision:
 
     allowed: bool
     reply_text: str = ""
-    persist_policy: bool = False
-    updated_policy: MessagingIdentityPolicy | None = None
 
 
 def enforce_inbound_buzz_message_security(
@@ -43,14 +40,18 @@ def enforce_inbound_buzz_message_security(
     env_allowed_pubkeys: list[str],
 ) -> InboundDecision:
     """Authorize an inbound Buzz mention/reply and handle ``/pair`` attempts."""
-    record, policy = load_identity_policy(MessagingPlatform.BUZZ.value)
-    if env_allowed_pubkeys and not policy.allowed_user_ids:
-        policy.allowed_user_ids = list(env_allowed_pubkeys)
-        policy.inbound_enabled = True
+    record, policy = load_identity_policy(
+        MessagingPlatform.BUZZ.value, fallback_allowed_user_ids=env_allowed_pubkeys
+    )
 
     if text.strip().lower().startswith("/pair "):
-        code = text.strip().split(maxsplit=1)[1] if " " in text.strip() else ""
-        ok, msg = complete_pairing(policy=policy, user_id=pubkey, code=code)
+        ok, msg = authorize_pairing(
+            MessagingPlatform.BUZZ.value,
+            user_id=pubkey,
+            chat_id=channel_id,
+            text=text,
+            fallback_allowed_user_ids=env_allowed_pubkeys,
+        )
         audit_log_inbound_message(
             platform=MessagingPlatform.BUZZ.value,
             user_id=pubkey,
@@ -62,8 +63,6 @@ def enforce_inbound_buzz_message_security(
         return InboundDecision(
             allowed=False,
             reply_text=msg,
-            persist_policy=True,
-            updated_policy=policy,
         )
 
     if text.strip().lower() in {"/start", "/help"}:
@@ -132,10 +131,9 @@ def is_pubkey_authorized(*, pubkey: str, channel_id: str, env_allowed_pubkeys: l
     able to approve or deny a pending write-tool action just by replying to
     its prompt message.
     """
-    _, policy = load_identity_policy(MessagingPlatform.BUZZ.value)
-    if env_allowed_pubkeys and not policy.allowed_user_ids:
-        policy.allowed_user_ids = list(env_allowed_pubkeys)
-        policy.inbound_enabled = True
+    _, policy = load_identity_policy(
+        MessagingPlatform.BUZZ.value, fallback_allowed_user_ids=env_allowed_pubkeys
+    )
     result = authorize_inbound_message(policy=policy, user_id=pubkey, chat_id=channel_id)
     audit_log_inbound_message(
         platform=MessagingPlatform.BUZZ.value,

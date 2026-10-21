@@ -16,7 +16,7 @@ from gateway.transports.slack.settings import (
     require_transport_credential,
 )
 
-_STORE_PATH = "gateway.transports.slack.settings.get_integration"
+_STORE_PATH = "gateway.transports.slack.settings.get_single_integration"
 
 _TOKEN_VARS = {
     "SLACK_BOT_TOKEN": "xoxb-test",

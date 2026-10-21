@@ -9,7 +9,6 @@ from gateway.core.storage import SessionResolver
 from gateway.transports.buzz.inbound_security import InboundDecision
 from gateway.transports.buzz.settings import BuzzInboundMessage
 from integrations.buzz import BuzzClient
-from integrations.messaging_security import MessagingPlatform
 
 
 def conversation_key(event: BuzzInboundMessage) -> str:
@@ -37,7 +36,6 @@ def resolve_or_rotate_session(
 
     return apply_inbound_decision(
         decision,
-        platform=MessagingPlatform.BUZZ.value,
         resolver=session_resolver,
         scope=scope,
         conversation_key=conversation_key(event),

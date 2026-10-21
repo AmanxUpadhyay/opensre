@@ -13,15 +13,12 @@ from dataclasses import dataclass
 from config.constants.gateway import NEW_SESSION_MESSAGE, ROTATE_SESSION
 from config.principal import Actor, Principal, StorageScope
 from gateway.core.middleware.inbound_decision import apply_inbound_decision
-from integrations.messaging_security import MessagingIdentityPolicy
 
 
 @dataclass(frozen=True)
 class _Decision:
     allowed: bool
     reply_text: str = ""
-    persist_policy: bool = False
-    updated_policy: MessagingIdentityPolicy | None = None
 
 
 class _Resolver:
@@ -48,7 +45,6 @@ def _apply(decision: _Decision, *, text: str = "hello", unauthorized_reply: str 
     sent: list[str] = []
     session = apply_inbound_decision(
         decision,
-        platform="telegram",
         resolver=resolver,  # type: ignore[arg-type]
         scope=_scope(),
         conversation_key="conv-1",

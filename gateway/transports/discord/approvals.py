@@ -20,6 +20,7 @@ from gateway.core.middleware.approvals import (
     ApprovalBroker,
     arguments_preview,
 )
+from gateway.core.middleware.identity_policy import is_user_authorized
 from gateway.transports.discord.client import edit_message, send_message_with_components
 
 logger = logging.getLogger("gateway")
@@ -107,8 +108,12 @@ def handle_component_interaction(
     else:
         return False
     user_id = str(interaction.user.id)
-    allowed_user_ids_set = set(allowed_user_ids)
-    if not allowed_user_ids_set or user_id not in allowed_user_ids_set:
+    if not is_user_authorized(
+        "discord",
+        user_id=user_id,
+        chat_id=str(interaction.channel_id or ""),
+        fallback_allowed_user_ids=allowed_user_ids,
+    ):
         logger.info("[discord-gateway] approval click from unauthorized user=%s ignored", user_id)
         return False
     return broker.resolve(approval_id, approved=approved, decided_by=user_id)

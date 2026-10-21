@@ -18,6 +18,7 @@ import secrets
 import string
 import time
 from enum import StrEnum
+from typing import Literal
 
 from pydantic import Field, PrivateAttr
 
@@ -197,6 +198,19 @@ def _is_pairing_expired(policy: MessagingIdentityPolicy) -> bool:
     if policy.pairing_created_at is None:
         return True
     return (time.time() - policy.pairing_created_at) > _PAIRING_CODE_TTL_SECONDS
+
+
+def pairing_code_status(
+    policy: MessagingIdentityPolicy,
+) -> Literal["valid", "expired", "absent", "exhausted"]:
+    """Describe the stored pairing code's usability without changing the policy."""
+    if not policy.pairing_secret_hash:
+        return "absent"
+    if _is_pairing_expired(policy):
+        return "expired"
+    if policy.pairing_attempts >= _MAX_PAIRING_ATTEMPTS:
+        return "exhausted"
+    return "valid"
 
 
 # ---------------------------------------------------------------------------

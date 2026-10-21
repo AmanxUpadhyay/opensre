@@ -6,6 +6,8 @@ from dataclasses import dataclass
 
 from config.constants.gateway import ROTATE_SESSION
 from gateway.core.middleware.identity_policy import (
+    authorize_pairing,
+    has_stored_identity_policy,
     load_identity_policy,
 )
 from gateway.transports.telegram.settings import connected_chat_user_id
@@ -15,7 +17,6 @@ from integrations.messaging_security import (
     MessagingPlatform,
     audit_log_inbound_message,
     authorize_inbound_message,
-    complete_pairing,
     message_hash,
 )
 
@@ -26,8 +27,6 @@ class InboundDecision:
 
     allowed: bool
     reply_text: str = ""
-    persist_policy: bool = False
-    updated_policy: MessagingIdentityPolicy | None = None
 
 
 def _is_connected_private_chat(
@@ -51,14 +50,18 @@ def enforce_inbound_telegram_message_security(
     env_allowed_user_ids: list[str],
 ) -> InboundDecision:
     """Authorize inbound Telegram DM text and handle /pair attempts."""
-    record, policy = load_identity_policy(MessagingPlatform.TELEGRAM.value)
-    if env_allowed_user_ids and not policy.allowed_user_ids:
-        policy.allowed_user_ids = list(env_allowed_user_ids)
-        policy.inbound_enabled = True
+    record, policy = load_identity_policy(
+        MessagingPlatform.TELEGRAM.value, fallback_allowed_user_ids=env_allowed_user_ids
+    )
 
     if text.strip().lower().startswith("/pair "):
-        code = text.strip().split(maxsplit=1)[1] if " " in text.strip() else ""
-        ok, msg = complete_pairing(policy=policy, user_id=user_id, code=code)
+        ok, msg = authorize_pairing(
+            MessagingPlatform.TELEGRAM.value,
+            user_id=user_id,
+            chat_id=chat_id,
+            text=text,
+            fallback_allowed_user_ids=env_allowed_user_ids,
+        )
         audit_log_inbound_message(
             platform=MessagingPlatform.TELEGRAM.value,
             user_id=user_id,
@@ -70,8 +73,6 @@ def enforce_inbound_telegram_message_security(
         return InboundDecision(
             allowed=False,
             reply_text=msg,
-            persist_policy=True,
-            updated_policy=policy,
         )
 
     if text.strip().lower() in {"/start", "/help"}:
@@ -92,7 +93,11 @@ def enforce_inbound_telegram_message_security(
             ),
         )
 
-    connected = connected_chat_user_id(record.get("credentials") or {}) if record else ""
+    connected = (
+        connected_chat_user_id(record.get("credentials") or {})
+        if record and not has_stored_identity_policy(record)
+        else ""
+    )
     result: AuthorizationResult = (
         AuthorizationResult(allowed=True, reason="User is the connected chat")
         if _is_connected_private_chat(policy, connected, user_id=user_id, chat_id=chat_id)

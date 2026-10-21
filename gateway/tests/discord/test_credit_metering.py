@@ -69,7 +69,6 @@ def test_denied_credits_bill_the_org_and_never_reach_the_agent(
             "gateway.transports.discord.dispatcher.enforce_inbound_discord_message_security",
             return_value=DiscordInboundDecision(allowed=True),
         ),
-        patch("gateway.core.middleware.inbound_decision.persist_policy_if_needed"),
         patch("gateway.transports.discord.dispatcher.add_reaction") as add_reaction,
         patch("gateway.transports.discord.dispatcher.remove_reaction") as remove_reaction,
         patch("gateway.transports.discord.turn_output.send_message", return_value="status-1"),

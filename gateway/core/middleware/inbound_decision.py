@@ -1,7 +1,7 @@
 """Apply one inbound authorization decision and produce the session to run.
 
 The choreography after inbound security is the same on every chat transport:
-persist any policy change, send the decision's reply, stop denied turns,
+send the decision's reply, stop denied turns,
 rotate on the ``ROTATE_SESSION`` sentinel (announcing the new session, and
 running no turn for a bare ``/new``), otherwise resolve the bound session.
 
@@ -25,9 +25,6 @@ from typing import Protocol
 from config.constants.gateway import NEW_SESSION_MESSAGE, ROTATE_SESSION
 from config.principal import StorageScope
 from core.agent_harness import SessionCore
-from gateway.core.middleware.identity_policy import (
-    persist_policy_if_needed,
-)
 from gateway.core.storage import SessionResolver
 
 
@@ -42,19 +39,10 @@ class InboundTurnDecision(Protocol):
     def reply_text(self) -> str:
         """A reply to send first, or the ``ROTATE_SESSION`` sentinel, or ``""``."""
 
-    @property
-    def persist_policy(self) -> bool:
-        """Whether this decision changed the identity policy."""
-
-    @property
-    def updated_policy(self) -> object | None:
-        """The changed policy to store when ``persist_policy`` is set."""
-
 
 def apply_inbound_decision(
     decision: InboundTurnDecision,
     *,
-    platform: str,
     resolver: SessionResolver,
     scope: StorageScope,
     conversation_key: str,
@@ -71,8 +59,6 @@ def apply_inbound_decision(
     ``resolver_lock`` guards only the rotate/resolve step — replies are sent
     outside it so a slow send cannot serialize every conversation.
     """
-    persist_policy_if_needed(platform, decision)  # type: ignore[arg-type]
-
     is_rotate = decision.reply_text == ROTATE_SESSION
     if decision.reply_text and not is_rotate:
         # Pairing / help replies are safe to show; allowlist denial reasons

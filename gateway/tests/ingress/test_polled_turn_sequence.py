@@ -178,9 +178,9 @@ class _BuzzClient:
 def _isolated_identity(monkeypatch: pytest.MonkeyPatch) -> None:
     """Keep identity policy off the developer's real integration store."""
     monkeypatch.setenv("ORGANIZATION_ID", "org_polled_parity")
-    from gateway.core.middleware import identity_policy
+    from integrations import messaging_policy_store
 
-    monkeypatch.setattr(identity_policy, "get_integration", lambda *_a, **_kw: None)
+    monkeypatch.setattr(messaging_policy_store, "get_single_integration", lambda *_a, **_kw: None)
 
 
 def _run_telegram_turn(monkeypatch: pytest.MonkeyPatch, recorder: _Recorder) -> None:
